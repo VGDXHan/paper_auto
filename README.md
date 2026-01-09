@@ -41,6 +41,12 @@ set DEEPSEEK_BASE_URL=https://api.deepseek.com
 python main.py translate --db nature.sqlite --model deepseek-chat
 ```
 
+并行翻译（通过 `--concurrency` 控制并发，请求过快可降低 `--rate` 避免 429）：
+
+```bat
+python main.py translate --db nature.sqlite --model deepseek-chat --concurrency 20 --rate 2
+```
+
 只翻译少量用于验证：
 
 ```bat

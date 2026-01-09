@@ -32,14 +32,18 @@ class RateLimiter:
     def __init__(self, rate_per_sec: float):
         self._min_interval = 0.0 if rate_per_sec <= 0 else 1.0 / rate_per_sec
         self._last = 0.0
+        import asyncio
+
+        self._lock = asyncio.Lock()
 
     async def wait(self) -> None:
         if self._min_interval <= 0:
             return
-        now = time.monotonic()
-        sleep_s = self._min_interval - (now - self._last)
-        if sleep_s > 0:
-            import asyncio
+        async with self._lock:
+            now = time.monotonic()
+            sleep_s = self._min_interval - (now - self._last)
+            if sleep_s > 0:
+                import asyncio
 
-            await asyncio.sleep(sleep_s)
-        self._last = time.monotonic()
+                await asyncio.sleep(sleep_s)
+            self._last = time.monotonic()

@@ -7,8 +7,8 @@ import os
 import db
 from exporter import export_rows
 from crawler import CrawlConfig, crawl
-from translator import build_client, translate_abstract, translated_at
-from utils import clean_text, sha256_text
+from translator import build_async_client, translated_at, translate_abstract_async
+from utils import RateLimiter, clean_text, sha256_text
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_tr.add_argument("--api-key", default=None)
     p_tr.add_argument("--batch-size", type=int, default=20)
     p_tr.add_argument("--max-items", type=int, default=0)
+    p_tr.add_argument("--concurrency", type=int, default=3)
+    p_tr.add_argument("--rate", type=float, default=1.5)
 
     p_ex = sub.add_parser("export")
     p_ex.add_argument("--db", default="nature.sqlite")
@@ -80,32 +82,58 @@ async def run_crawl(args: argparse.Namespace) -> None:
         conn.close()
 
 
-def run_translate(args: argparse.Namespace) -> None:
+async def run_translate(args: argparse.Namespace) -> None:
     conn = db.connect(args.db)
     db.init_db(conn)
 
-    client = build_client(args.base_url, args.api_key)
+    client = build_async_client(args.base_url, args.api_key)
+    limiter = RateLimiter(args.rate)
+    sem = asyncio.Semaphore(max(1, args.concurrency))
+    db_lock = asyncio.Lock()
 
     rows = db.get_pending_translations(conn, args.max_items if args.max_items > 0 else 0)
-    count = 0
-    for r in rows:
-        if args.max_items > 0 and count >= args.max_items:
-            break
+    total = len(rows)
+    if args.max_items > 0:
+        total = min(total, args.max_items)
+    print(f"待翻译摘要数量：{total}", flush=True)
+
+    progress = {"done": 0}
+
+    async def process_row(r) -> None:
         abstract_en = clean_text(r["abstract_en"]) or ""
         if not abstract_en:
-            continue
+            return
+
+        ident = clean_text(r["title"]) or r["article_url"]
         h = r["abstract_en_hash"] or sha256_text(abstract_en)
-        cached = db.get_cached_translation(conn, h)
+
+        async with db_lock:
+            cached = db.get_cached_translation(conn, h)
+
         if cached:
-            db.update_translation(conn, r["article_url"], cached, translated_at())
-            count += 1
-            continue
+            async with db_lock:
+                idx = progress["done"] + 1
+                print(f"[{idx}/{total}] 命中缓存：{ident}", flush=True)
+                db.update_translation(conn, r["article_url"], cached, translated_at())
+                progress["done"] += 1
+            return
 
-        zh = translate_abstract(client, args.model, abstract_en)
-        zh = clean_text(zh) or zh
-        db.update_translation(conn, r["article_url"], zh, translated_at())
-        count += 1
+        async with sem:
+            await limiter.wait()
+            zh = await translate_abstract_async(client, args.model, abstract_en)
+            zh = clean_text(zh) or zh
 
+        async with db_lock:
+            idx = progress["done"] + 1
+            print(f"[{idx}/{total}] 已完成：{ident}", flush=True)
+            db.update_translation(conn, r["article_url"], zh, translated_at())
+            progress["done"] += 1
+
+    tasks = [asyncio.create_task(process_row(r)) for r in rows[:total]]
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    print(f"翻译完成：{progress['done']}/{total}", flush=True)
     conn.close()
 
 
@@ -122,7 +150,7 @@ def main() -> None:
     if args.cmd == "crawl":
         asyncio.run(run_crawl(args))
     elif args.cmd == "translate":
-        run_translate(args)
+        asyncio.run(run_translate(args))
     elif args.cmd == "export":
         run_export(args)
 
