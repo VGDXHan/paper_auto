@@ -32,7 +32,7 @@ python main.py crawl --search-url "<nature search url>" --db nature.sqlite --max
 
 ```bat
 set DEEPSEEK_API_KEY=your_key
-set DEEPSEEK_BASE_URL=your_base_url
+set DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
 然后翻译（`--model` 运行时指定，例如 `deepseek-chat`）：
