@@ -1,0 +1,21 @@
+# data outputs
+*.sqlite
+*.sqlite3
+*.db
+*.csv
+*.jsonl
+
+# python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.so
+.pytest_cache/
+.venv/
+venv/
+
+# tooling
+.DS_Store
+.vscode/
+.idea/

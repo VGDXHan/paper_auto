@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+
+import db
+from exporter import export_rows
+from crawler import CrawlConfig, crawl
+from translator import build_client, translate_abstract, translated_at
+from utils import clean_text, sha256_text
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="nature_auto")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_crawl = sub.add_parser("crawl")
+    p_crawl.add_argument("--search-url", required=True)
+    p_crawl.add_argument("--db", default="nature.sqlite")
+    p_crawl.add_argument("--max-pages", type=int, default=0)
+    p_crawl.add_argument("--limit-articles", type=int, default=0)
+    p_crawl.add_argument("--concurrency", type=int, default=3)
+    p_crawl.add_argument("--rate", type=float, default=1.5)
+    p_crawl.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="disable resume behavior (re-fetch even if abstract_en exists)",
+    )
+    p_crawl.add_argument(
+        "--export-format",
+        choices=["csv", "jsonl"],
+        default=None,
+        help="export a user-visible file after crawl finishes",
+    )
+    p_crawl.add_argument(
+        "--export-path",
+        default=None,
+        help="export file path (default: export.<fmt> in current folder)",
+    )
+
+    p_tr = sub.add_parser("translate")
+    p_tr.add_argument("--db", default="nature.sqlite")
+    p_tr.add_argument("--model", required=True)
+    p_tr.add_argument("--base-url", default=None)
+    p_tr.add_argument("--api-key", default=None)
+    p_tr.add_argument("--batch-size", type=int, default=20)
+    p_tr.add_argument("--max-items", type=int, default=0)
+
+    p_ex = sub.add_parser("export")
+    p_ex.add_argument("--db", default="nature.sqlite")
+    p_ex.add_argument("--format", choices=["csv", "jsonl"], required=True)
+    p_ex.add_argument("--out", required=True)
+    p_ex.add_argument(
+        "--search-url",
+        default=None,
+        help="optional: export only records from a specific search_url",
+    )
+
+    return p
+
+
+async def run_crawl(args: argparse.Namespace) -> None:
+    cfg = CrawlConfig(
+        search_url=args.search_url,
+        db_path=args.db,
+        max_pages=args.max_pages,
+        limit_articles=args.limit_articles,
+        concurrency=args.concurrency,
+        rate=args.rate,
+        resume=not args.no_resume,
+    )
+    await crawl(cfg)
+
+    if args.export_format:
+        out_path = args.export_path or f"export.{args.export_format}"
+        conn = db.connect(args.db)
+        rows = db.iter_articles_for_export(conn, args.search_url)
+        export_rows(rows, out_path, args.export_format)
+        conn.close()
+
+
+def run_translate(args: argparse.Namespace) -> None:
+    conn = db.connect(args.db)
+    db.init_db(conn)
+
+    client = build_client(args.base_url, args.api_key)
+
+    rows = db.get_pending_translations(conn, args.max_items if args.max_items > 0 else 0)
+    count = 0
+    for r in rows:
+        if args.max_items > 0 and count >= args.max_items:
+            break
+        abstract_en = clean_text(r["abstract_en"]) or ""
+        if not abstract_en:
+            continue
+        h = r["abstract_en_hash"] or sha256_text(abstract_en)
+        cached = db.get_cached_translation(conn, h)
+        if cached:
+            db.update_translation(conn, r["article_url"], cached, translated_at())
+            count += 1
+            continue
+
+        zh = translate_abstract(client, args.model, abstract_en)
+        zh = clean_text(zh) or zh
+        db.update_translation(conn, r["article_url"], zh, translated_at())
+        count += 1
+
+    conn.close()
+
+
+def run_export(args: argparse.Namespace) -> None:
+    conn = db.connect(args.db)
+    db.init_db(conn)
+    rows = db.iter_articles_for_export(conn, args.search_url)
+    export_rows(rows, args.out, args.format)
+    conn.close()
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    if args.cmd == "crawl":
+        asyncio.run(run_crawl(args))
+    elif args.cmd == "translate":
+        run_translate(args)
+    elif args.cmd == "export":
+        run_export(args)
+
+
+if __name__ == "__main__":
+    main()
