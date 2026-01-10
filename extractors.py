@@ -57,6 +57,9 @@ def extract_fields(html: str) -> dict[str, str | None]:
         or o.get("name")
         or (soup.title.get_text(strip=True) if soup.title else None)
     )
+    if not title:
+        m = soup.find("meta", attrs={"name": "citation_title"})
+        title = clean_text(m.get("content") if m else None)
 
     journal = None
     is_part_of = o.get("isPartOf")
@@ -70,8 +73,14 @@ def extract_fields(html: str) -> dict[str, str | None]:
     if not published_date:
         m = soup.find("meta", attrs={"property": "article:published_time"})
         published_date = clean_text(m.get("content") if m else None)
+    if not published_date:
+        m = soup.find("meta", attrs={"name": "citation_publication_date"})
+        published_date = clean_text(m.get("content") if m else None)
 
     abstract = clean_text(o.get("abstract") or o.get("description"))
+    if not abstract:
+        m = soup.find("meta", attrs={"name": "citation_abstract"})
+        abstract = clean_text(m.get("content") if m else None)
     if not abstract:
         abstract = _extract_meta_abstract(soup)
     if not abstract:
@@ -133,6 +142,18 @@ def extract_fields_cvf(
         "published_date": published_date,
         "abstract_en": abstract,
     }
+
+
+def extract_fields_nature(html: str) -> dict[str, str | None]:
+    return extract_fields(html)
+
+
+def extract_fields_science(html: str) -> dict[str, str | None]:
+    return extract_fields(html)
+
+
+def extract_fields_cell(html: str) -> dict[str, str | None]:
+    return extract_fields(html)
 
 
 def _extract_meta_abstract(soup: BeautifulSoup) -> str | None:

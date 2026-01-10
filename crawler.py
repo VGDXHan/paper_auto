@@ -11,19 +11,41 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 import db
-from extractors import extract_fields, extract_fields_cvf
+from extractors import (
+    extract_fields,
+    extract_fields_cvf,
+    extract_fields_nature,
+    extract_fields_science,
+    extract_fields_cell,
+)
 from utils import RateLimiter, clean_text, normalize_url, now_iso, sha256_text
 
 
 NATURE_BASE = "https://www.nature.com"
 CVF_BASE = "https://openaccess.thecvf.com"
+SCIENCE_BASE = "https://www.science.org"
+CELL_BASE = "https://www.cell.com"
 
 
-def _is_cvf_openaccess(url: str) -> bool:
-    try:
-        return urlparse(url).netloc.lower() == "openaccess.thecvf.com"
-    except Exception:
-        return False
+def _detect_site(url: str) -> str:
+    netloc = urlparse(url).netloc.lower()
+    if "openaccess.thecvf.com" in netloc:
+        return "cvf"
+    if "science.org" in netloc:
+        return "science"
+    if "cell.com" in netloc or "sciencedirect.com" in netloc:
+        return "cell"
+    return "nature"
+
+
+def _get_base_url(site: str) -> str:
+    if site == "cvf":
+        return CVF_BASE
+    if site == "science":
+        return SCIENCE_BASE
+    if site == "cell":
+        return CELL_BASE
+    return NATURE_BASE
 
 
 def _cvf_defaults_from_search_url(search_url: str) -> tuple[str | None, str | None]:
@@ -64,30 +86,40 @@ async def _fetch(client: httpx.AsyncClient, url: str, limiter: RateLimiter) -> s
 def _parse_article_links(html: str, *, search_url: str) -> list[str]:
     soup = BeautifulSoup(html, "lxml")
     urls: list[str] = []
-
-    if _is_cvf_openaccess(search_url):
-        for a in soup.find_all("a", href=True):
-            href = a.get("href")
-            if not href:
-                continue
-            u = normalize_url(href, CVF_BASE)
-            if "/content/" in u and u.endswith("_paper.html"):
-                urls.append(u)
-        return sorted(set(urls))
+    
+    site = _detect_site(search_url)
+    base = _get_base_url(site)
 
     for a in soup.find_all("a", href=True):
         href = a.get("href")
         if not href:
             continue
-        u = normalize_url(href, NATURE_BASE)
-        if "/articles/" in u:
-            urls.append(u)
+        u = normalize_url(href, base)
+        
+        if site == "cvf":
+            if "/content/" in u and u.endswith("_paper.html"):
+                urls.append(u)
+        elif site == "science":
+            # Science links are typically /doi/10.1126/...
+            if "/doi/10.1126/" in u:
+                urls.append(u)
+        elif site == "cell":
+            # Cell links are typically /fulltext/S... or /article/S...
+            if "/fulltext/S" in u or "/article/S" in u:
+                urls.append(u)
+        else:
+            # Nature default
+            if "/articles/" in u:
+                urls.append(u)
+                
     return sorted(set(urls))
 
 
 def _find_next_page_url(html: str, current_url: str) -> str | None:
     soup = BeautifulSoup(html, "lxml")
-    base = CVF_BASE if _is_cvf_openaccess(current_url) else NATURE_BASE
+    site = _detect_site(current_url)
+    base = _get_base_url(site)
+    
     link = soup.find("link", attrs={"rel": "next"})
     if link and link.get("href"):
         return normalize_url(link.get("href"), base)
@@ -107,8 +139,8 @@ async def crawl(cfg: CrawlConfig) -> None:
     limiter = RateLimiter(cfg.rate)
     sem = asyncio.Semaphore(max(1, cfg.concurrency))
 
-    site = "CVF OpenAccess" if _is_cvf_openaccess(cfg.search_url) else "Nature"
-    print(f"开始抓取：{site} | url={cfg.search_url}", flush=True)
+    site = _detect_site(cfg.search_url)
+    print(f"开始抓取：{site.upper()} | url={cfg.search_url}", flush=True)
     print(
         f"配置：db={cfg.db_path} concurrency={cfg.concurrency} rate={cfg.rate} resume={cfg.resume} max_pages={cfg.max_pages} limit_articles={cfg.limit_articles}",
         flush=True,
@@ -132,14 +164,26 @@ async def crawl(cfg: CrawlConfig) -> None:
             async with sem:
                 html = await _fetch(client, url, limiter)
 
-            if _is_cvf_openaccess(url):
+            # Detect site again for the article URL as it might be on a different domain (e.g. redirect)
+            # But usually we stick to the extractor logic based on the detected site type or just use generic.
+            # Here we trust the site detection from the search URL or re-detect.
+            article_site = _detect_site(url)
+            
+            if article_site == "cvf":
                 fields = extract_fields_cvf(
                     html,
                     default_journal=cvf_default_journal,
                     default_published_date=cvf_default_published_date,
                 )
+            elif article_site == "science":
+                fields = extract_fields_science(html)
+            elif article_site == "cell":
+                fields = extract_fields_cell(html)
+            elif article_site == "nature":
+                fields = extract_fields_nature(html)
             else:
                 fields = extract_fields(html)
+                
             abstract_en = clean_text(fields.get("abstract_en"))
             item = {
                 "article_url": url,
