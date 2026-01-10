@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 import db
 from extractors import extract_fields, extract_fields_cvf
@@ -122,9 +123,11 @@ async def crawl(cfg: CrawlConfig) -> None:
 
         cvf_default_journal, cvf_default_published_date = _cvf_defaults_from_search_url(cfg.search_url)
 
-        async def handle_article(url: str) -> None:
+        async def handle_article(url: str, *, pbar: tqdm, pbar_lock: asyncio.Lock) -> None:
             nonlocal total_articles
             if cfg.resume and db.has_abstract_en(conn, url):
+                async with pbar_lock:
+                    pbar.update(1)
                 return
             async with sem:
                 html = await _fetch(client, url, limiter)
@@ -150,6 +153,8 @@ async def crawl(cfg: CrawlConfig) -> None:
             }
             db.upsert_article(conn, item)
             total_articles += 1
+            async with pbar_lock:
+                pbar.update(1)
 
         while page_url:
             if page_url in seen_pages:
@@ -173,9 +178,20 @@ async def crawl(cfg: CrawlConfig) -> None:
             print(f"第{page_count}页：候选文章 {len(article_urls)}", flush=True)
             before_total = total_articles
 
-            tasks = [asyncio.create_task(handle_article(u)) for u in article_urls]
-            if tasks:
-                await asyncio.gather(*tasks)
+            pbar_lock = asyncio.Lock()
+            pbar = tqdm(
+                total=len(article_urls),
+                desc=f"page {page_count}",
+                leave=False,
+                unit="article",
+            )
+
+            try:
+                tasks = [asyncio.create_task(handle_article(u, pbar=pbar, pbar_lock=pbar_lock)) for u in article_urls]
+                if tasks:
+                    await asyncio.gather(*tasks)
+            finally:
+                pbar.close()
 
             added = total_articles - before_total
             print(f"第{page_count}页完成：新增 {added}，累计新增 {total_articles}", flush=True)
