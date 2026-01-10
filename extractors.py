@@ -85,6 +85,56 @@ def extract_fields(html: str) -> dict[str, str | None]:
     }
 
 
+def extract_fields_cvf(
+    html: str,
+    *,
+    default_journal: str | None = None,
+    default_published_date: str | None = None,
+) -> dict[str, str | None]:
+    soup = BeautifulSoup(html, "lxml")
+
+    def meta(name: str) -> str | None:
+        m = soup.find("meta", attrs={"name": name})
+        return clean_text(m.get("content") if m else None)
+
+    title = meta("citation_title")
+    if not title:
+        t = soup.find(id="papertitle")
+        title = clean_text(t.get_text(" ", strip=True) if t else None)
+    if not title:
+        title = clean_text(soup.title.get_text(" ", strip=True) if soup.title else None)
+
+    journal = meta("citation_conference_title") or default_journal
+    published_date = meta("citation_publication_date") or default_published_date
+
+    abstract = meta("citation_abstract")
+    if not abstract:
+        a = soup.find(id="abstract")
+        abstract = clean_text(a.get_text(" ", strip=True) if a else None)
+    if not abstract:
+        header = soup.find(
+            lambda t: t.name in {"h1", "h2", "h3", "h4"}
+            and "abstract" == t.get_text(" ", strip=True).lower()
+        )
+        if header:
+            parts: list[str] = []
+            for el in header.next_elements:
+                if getattr(el, "name", None) in {"h1", "h2", "h3", "h4"} and el is not header:
+                    break
+                if getattr(el, "name", None) == "p":
+                    txt = clean_text(el.get_text(" ", strip=True))
+                    if txt:
+                        parts.append(txt)
+            abstract = clean_text(" ".join(parts))
+
+    return {
+        "title": title,
+        "journal": journal,
+        "published_date": published_date,
+        "abstract_en": abstract,
+    }
+
+
 def _extract_meta_abstract(soup: BeautifulSoup) -> str | None:
     for attrs in (
         {"name": "dc.description"},

@@ -12,7 +12,7 @@ from utils import RateLimiter, clean_text, sha256_text
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nature_auto")
+    p = argparse.ArgumentParser(prog="paper_auto")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     p_crawl = sub.add_parser("crawl")
