@@ -59,6 +59,12 @@ python main.py translate --db articles.sqlite --model deepseek-chat --max-items 
 python main.py export --db articles.sqlite --format csv --out articles.csv
 ```
 
+导出 TXT（适合导入阅读app当小说看）：
+
+```bat
+python main.py export --db articles.sqlite --format txt --out articles.txt
+```
+
 导出 JSONL：
 
 ```bat

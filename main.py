@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_crawl.add_argument(
         "--export-format",
-        choices=["csv", "jsonl"],
+        choices=["csv", "jsonl", "txt"],
         default=None,
         help="export a user-visible file after crawl finishes",
     )
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ex = sub.add_parser("export")
     p_ex.add_argument("--db", default="nature.sqlite")
-    p_ex.add_argument("--format", choices=["csv", "jsonl"], required=True)
+    p_ex.add_argument("--format", choices=["csv", "jsonl", "txt"], required=True)
     p_ex.add_argument("--out", required=True)
     p_ex.add_argument(
         "--search-url",

@@ -4,6 +4,7 @@
 *.db
 *.csv
 *.jsonl
+*.txt
 
 # python
 __pycache__/
